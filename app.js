@@ -200,7 +200,7 @@ function writeBatch(d, opts){
 // آزمون ایمن: این نسخه عمداً به Firebase اصلی متصل نمی‌شود.
 // اطلاعات پروژهٔ آزمایشی خودت را طبق README-TEST-FA.md در این بخش وارد کن.
 const firebaseConfig = {
-  apiKey: "REPLACE_WITH_TEST_FIREBASE_API_KEY",
+  apiKey: "AIzaSyCTu_5mr3n16Lh7Cg-bkvR9o09hc-TaLWA",
   authDomain: "hesabdari-route-test.firebaseapp.com",
   projectId: "hesabdari-route-test",
   storageBucket: "hesabdari-route-test.firebasestorage.app",
