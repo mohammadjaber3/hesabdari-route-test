@@ -200,7 +200,7 @@ function writeBatch(d, opts){
 // آزمون ایمن: این نسخه عمداً به Firebase اصلی متصل نمی‌شود.
 // اطلاعات پروژهٔ آزمایشی خودت را طبق README-TEST-FA.md در این بخش وارد کن.
 const firebaseConfig = {
-  apiKey: "AIzaSyCTu_5mr3n16Lh7Cg-bkvR9o09hc-TaLWA",
+  apiKey: "REPLACE_WITH_TEST_FIREBASE_API_KEY",
   authDomain: "hesabdari-route-test.firebaseapp.com",
   projectId: "hesabdari-route-test",
   storageBucket: "hesabdari-route-test.firebasestorage.app",
@@ -713,11 +713,11 @@ const App = {
 
   // فقط کسی «مالک» حساب می‌شود که هم نقش «owner» در Firestore داشته باشد و هم دقیقاً
   // با همین ایمیل وارد شده باشد — یعنی حتی اگر یک نقش owner به‌اشتباه به کاربر دیگری
-  // داده شود، تا وقتی ایمیلش manager@motar.com نباشد، دسترسی مدیریتی نمی‌گیرد.
-  OWNER_EMAIL: 'manager@motar.com',
+  // داده شود، تا وقتی ایمیلش mortazaaslami12@gmail.com نباشد، دسترسی مدیریتی نمی‌گیرد.
+  OWNER_EMAIL: 'mortazaaslami12@gmail.com',
   // مالک عملیاتی: هر کس در Firebase نقش owner داشته باشد (محصول، موجودی، فروش، خرید، پرداخت، گزارش)
   isOwner(){ return this.role==='owner' && !!this.user && String(this.user.email||'').toLowerCase()===this.OWNER_EMAIL; },
-  // مدیر فنی: فقط manager@motar.com — تنظیمات، پشتیبان‌گیری/بازیابی، ابزار تطبیق، پاک‌کردن همه
+  // مدیر فنی: فقط mortazaaslami12@gmail.com — تنظیمات، پشتیبان‌گیری/بازیابی، ابزار تطبیق، پاک‌کردن همه
   isAdmin(){ return this.role==='owner' && !!this.user && String(this.user.email||'').toLowerCase()===this.OWNER_EMAIL; },
   /* --- نقش‌ها ---
      owner   : مالک — همه‌کار
