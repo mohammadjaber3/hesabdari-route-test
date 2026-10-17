@@ -1,0 +1,219 @@
+rules_version = '2';// Hesabdari / Sanei Store - Firestore rules (ASCII only, safe to paste)
+// Roles (doc businesses/main/team/{uid}.role): owner | partner | seller | staff
+//   owner   : everything (role=owner AND email manager@motar.com)
+//   partner : reads everything; creates sales, purchases, payments, expenses, customers, suppliers;
+//             cannot edit/delete payments or expenses, cannot delete anything, cannot touch settings,
+//             cannot edit/cancel/return invoices; products: only stock/avgCost (and first sellPrice)
+//   seller  : sales, customers, receipts; cannot see purchase books
+//   staff   : legacy role, writes without delete and without settings
+// NOTE: add the catalog app rules before the final catch-all match, or the catalog stops working.
+service cloud.firestore {
+  match /databases/{database}/documents {function signedIn() { return request.auth != null; }
+function teamDocPath(biz) {
+  return /databases/$(database)/documents/businesses/$(biz)/team/$(request.auth.uid);
+}
+function isMember(biz) { return signedIn() && exists(teamDocPath(biz)); }
+function roleOf(biz) { return get(teamDocPath(biz)).data.role; }
+function isRole(biz, r) { return isMember(biz) && roleOf(biz) == r; }
+
+function isOwner(biz) {
+  return isRole(biz, 'owner') && request.auth.token.email == 'mortazaaslami12@gmail.com';
+}
+function isPartner(biz) { return isRole(biz, 'partner'); }
+function isSeller(biz)  { return isRole(biz, 'seller') || isRole(biz, 'salesman'); }
+function isStaff(biz)   { return isRole(biz, 'staff'); }
+
+function canReadBooks(biz)     { return isOwner(biz) || isPartner(biz) || isStaff(biz); }
+function canReadSalesSide(biz) { return canReadBooks(biz) || isSeller(biz); }
+function canOperate(biz)       { return isOwner(biz) || isPartner(biz) || isStaff(biz) || isSeller(biz); }
+
+function idMatches(docId) { return request.resource.data.id == docId; }
+function num(v) { return v is number; }
+
+function d() { return request.resource.data; }
+function safeDate() {
+  return !('date' in d()) || (d().date is string && d().date.matches('^[0-9\\-:T.+Z ]*$'));
+}
+function safeImage(k) {
+  return !(k in d()) || (d()[k] is string && (d()[k] == '' || d()[k].matches('^data:image/(png|jpeg|jpg|webp|gif);base64,.*')));
+}
+function safeContent() { return safeDate() && safeImage('billImage') && safeImage('receiptImage'); }
+
+function immutableIdentity() {
+  return request.resource.data.id == resource.data.id
+    && (!resource.data.keys().hasAny(['invoiceNo']) || request.resource.data.invoiceNo == resource.data.invoiceNo)
+    && (!resource.data.keys().hasAny(['createdByEmail']) || request.resource.data.createdByEmail == resource.data.createdByEmail)
+    && (!resource.data.keys().hasAny(['createdByDevice']) || request.resource.data.createdByDevice == resource.data.createdByDevice)
+    && (!resource.data.keys().hasAny(['ts']) || request.resource.data.ts == resource.data.ts);
+}
+
+function changedKeys() { return request.resource.data.diff(resource.data).affectedKeys(); }
+function metaKeys() { return ['lastEditedByEmail', 'lastEditedByDevice', 'lastEditedTs']; }
+function onlyChangesPlusMeta(keys) { return changedKeys().hasOnly(keys.concat(metaKeys())); }
+
+function cancelLocked() {
+  return resource.data.get('status', '') != 'cancelled'
+    || !changedKeys().hasAny(['status', 'items', 'returns', 'total']);
+}
+
+function visitValid() {
+  return d().customerId is string && d().customerId.size() > 0
+    && d().date is string && d().date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+    && d().status in ['no_order', 'closed', 'revisit', 'sold', 'collected']
+    && d().get('note', '') is string && d().get('note', '').size() <= 300;
+}
+function routeValid() {
+  return d().name is string && d().name.size() > 0 && d().name.size() <= 60
+    && d().weekday is int && d().weekday >= 0 && d().weekday <= 6;
+}
+
+match /businesses/{biz} {
+
+  match /team/{uid} {
+    allow read: if signedIn() && (request.auth.uid == uid || isOwner(biz));
+    allow write: if false;
+  }
+
+  match /pins/{uid} {
+    allow read, write: if signedIn() && request.auth.uid == uid && isMember(biz);
+  }
+
+  match /meta/settings {
+    allow read: if isMember(biz);
+    allow create, update: if isOwner(biz);
+    allow delete: if false;
+  }
+  match /meta/{other} {
+    allow read, write: if isOwner(biz);
+  }
+  match /data/{doc} {
+    allow read, write: if isOwner(biz);
+  }
+
+  match /products/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if isOwner(biz) || isStaff(biz) || isSeller(biz) || isPartner(biz);
+    allow update: if isOwner(biz) || isStaff(biz)
+                  || (isSeller(biz) && onlyChangesPlusMeta(['stock']))
+                  || (isPartner(biz) && onlyChangesPlusMeta(['stock', 'avgCost', 'sellPrice'])
+                      && (!changedKeys().hasAny(['sellPrice']) || resource.data.get('sellPrice', 0) == 0));
+    allow delete: if isOwner(biz);
+  }
+
+  match /customers/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if canOperate(biz);
+    allow update: if isOwner(biz) || isStaff(biz) || isSeller(biz)
+                  || (isPartner(biz) && onlyChangesPlusMeta(['balance', 'phone', 'address']));
+    allow delete: if isOwner(biz);
+  }
+
+  match /sales/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if canOperate(biz) && safeContent()
+                  && idMatches(id) && request.resource.data.invoiceNo is string && request.resource.data.invoiceNo.size() > 0
+                  && num(request.resource.data.total) && request.resource.data.total >= 0
+                  && request.resource.data.items is list;
+    allow update: if (((isOwner(biz) || isStaff(biz) || isSeller(biz)) && immutableIdentity() && cancelLocked())
+                     || (isPartner(biz) && onlyChangesPlusMeta(['settled', 'remaining'])))
+                  && safeContent();
+    allow delete: if isOwner(biz);
+  }
+
+  match /purchases/{id} {
+    allow read: if canReadBooks(biz);
+    allow create: if (isOwner(biz) || isStaff(biz) || isPartner(biz)) && safeContent()
+                  && idMatches(id) && request.resource.data.invoiceNo is string && request.resource.data.invoiceNo.size() > 0
+                  && num(request.resource.data.total) && request.resource.data.total >= 0
+                  && request.resource.data.items is list;
+    allow update: if (((isOwner(biz) || isStaff(biz)) && immutableIdentity() && cancelLocked())
+                     || (isPartner(biz) && onlyChangesPlusMeta(['paid', 'remaining'])))
+                  && safeContent();
+    allow delete: if isOwner(biz);
+  }
+  match /suppliers/{id} {
+    allow read: if canReadBooks(biz);
+    allow create: if isOwner(biz) || isStaff(biz) || isPartner(biz);
+    allow update: if isOwner(biz) || isStaff(biz)
+                  || (isPartner(biz) && onlyChangesPlusMeta(['balance', 'balanceUSD']));
+    allow delete: if isOwner(biz);
+  }
+  match /expenses/{id} {
+    allow read: if canReadBooks(biz);
+    allow create: if (isOwner(biz) || isStaff(biz) || isPartner(biz)) && safeContent()
+                  && idMatches(id) && num(request.resource.data.amount) && request.resource.data.amount > 0;
+    allow update: if (isOwner(biz) || isStaff(biz)) && safeContent();
+    allow delete: if isOwner(biz);
+  }
+  match /openingEntries/{id} {
+    allow read: if canReadBooks(biz);
+    allow create, update: if isOwner(biz) || isStaff(biz);
+    allow delete: if isOwner(biz);
+  }
+
+  match /returns/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if (isOwner(biz) || isStaff(biz) || isSeller(biz))
+                  && idMatches(id) && num(request.resource.data.amount) && request.resource.data.amount >= 0
+                  && request.resource.data.originalSaleId is string;
+    allow update: if false;
+    allow delete: if isOwner(biz);
+  }
+
+  match /stockLedger/{id} {
+    allow read: if canReadBooks(biz);
+    allow create: if canOperate(biz)
+                  && idMatches(id) && request.resource.data.type is string && num(request.resource.data.quantityBase);
+    allow update: if false;
+    allow delete: if isOwner(biz);
+  }
+  match /auditLog/{id} {
+    allow read: if isOwner(biz) || isPartner(biz);
+    allow create: if isMember(biz) && idMatches(id)
+                  && request.resource.data.userId == request.auth.token.email;
+    allow update, delete: if false;
+  }
+
+  match /payments/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if safeContent() && (
+                    (canOperate(biz) && idMatches(id)
+                      && num(request.resource.data.amount) && request.resource.data.amount > 0
+                      && !('reversalOf' in request.resource.data))
+                    ||
+                    (isOwner(biz) && idMatches(id)
+                      && num(request.resource.data.amount) && request.resource.data.amount < 0
+                      && request.resource.data.reversalOf is string
+                      && request.resource.data.status == 'reversal')
+                  );
+    allow update: if isOwner(biz)
+                  || ((isPartner(biz) || isSeller(biz) || isStaff(biz))
+                      && !('receiptImage' in resource.data)
+                      && onlyChangesPlusMeta(['receiptImage'])
+                      && safeImage('receiptImage'));
+    allow delete: if isOwner(biz);
+  }
+  // ---- مسیر و ویزیت (مرحلهٔ ۱): مسیرها را فقط مالک/کارمند می‌سازد؛ ویزیت را همهٔ نقش‌های عملیاتی ثبت می‌کنند ----
+  match /routes/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if (isOwner(biz) || isStaff(biz)) && idMatches(id) && routeValid();
+    allow update: if (isOwner(biz) || isStaff(biz)) && immutableIdentity() && routeValid();
+    allow delete: if isOwner(biz);
+  }
+  match /visits/{id} {
+    allow read: if canReadSalesSide(biz);
+    allow create: if canOperate(biz) && idMatches(id) && visitValid();
+    allow update: if canOperate(biz) && immutableIdentity() && visitValid()
+                  && request.resource.data.customerId == resource.data.customerId
+                  && request.resource.data.date == resource.data.date;
+    allow delete: if isOwner(biz);
+  }
+}
+
+// =================================================================
+// =================================================================
+
+match /{document=**} {
+  allow read, write: if false;
+}  }
+}
